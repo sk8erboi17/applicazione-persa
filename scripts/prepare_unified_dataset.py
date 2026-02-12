@@ -87,64 +87,164 @@ def stream_oleeh(images_dir, idx_start, cache_dir, max_w, max_h):
     return formulas_tags, idx
 
 
+def _find_unimer_zip(cache_dir):
+    """Search for UniMER-1M.zip in various possible HuggingFace cache locations."""
+    hf_cache = cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+
+    # Strategy 1: Look in standard HF hub cache
+    ds_dir = os.path.join(hf_cache, "datasets--wanderkid--UniMER_Dataset")
+    if os.path.isdir(ds_dir):
+        # Search snapshots/ for the ZIP by name
+        snapshots = os.path.join(ds_dir, "snapshots")
+        if os.path.isdir(snapshots):
+            for root, dirs, files in os.walk(snapshots):
+                for f in files:
+                    if f == "UniMER-1M.zip":
+                        return os.path.realpath(os.path.join(root, f))
+
+        # Search blobs/ — HF sometimes stores files as SHA hashes
+        blobs = os.path.join(ds_dir, "blobs")
+        if os.path.isdir(blobs):
+            for f in os.listdir(blobs):
+                fp = os.path.join(blobs, f)
+                if os.path.isfile(fp) and os.path.getsize(fp) > 500_000_000:  # >500MB = likely the ZIP
+                    try:
+                        if zipfile.is_zipfile(fp):
+                            with zipfile.ZipFile(fp, "r") as zf:
+                                if any("UniMER-1M" in n for n in zf.namelist()[:10]):
+                                    print(f"  Found UniMER ZIP as blob: {fp}")
+                                    return fp
+                    except Exception:
+                        pass
+
+        # Check refs/ symlinks that might point to actual files
+        refs = os.path.join(ds_dir, "refs")
+        if os.path.isdir(refs):
+            for f in os.listdir(refs):
+                ref_path = os.path.join(refs, f)
+                if os.path.isfile(ref_path):
+                    try:
+                        with open(ref_path, "r") as rf:
+                            sha = rf.read().strip()
+                        blob_path = os.path.join(blobs, sha) if os.path.isdir(blobs) else None
+                        if blob_path and os.path.isfile(blob_path):
+                            if zipfile.is_zipfile(blob_path):
+                                with zipfile.ZipFile(blob_path, "r") as zf:
+                                    if any("UniMER-1M" in n for n in zf.namelist()[:10]):
+                                        print(f"  Found UniMER ZIP via ref: {blob_path}")
+                                        return blob_path
+                    except Exception:
+                        pass
+
+    # Strategy 2: Also check ~/.cache/huggingface/datasets/ (older HF versions)
+    alt_cache = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "datasets")
+    if os.path.isdir(alt_cache):
+        for root, dirs, files in os.walk(alt_cache):
+            for f in files:
+                if f == "UniMER-1M.zip":
+                    return os.path.realpath(os.path.join(root, f))
+            # Don't recurse too deep
+            if root.count(os.sep) - alt_cache.count(os.sep) > 5:
+                break
+
+    # Strategy 3: Check if user downloaded it manually to common locations
+    for manual_path in [
+        os.path.join(str(PROJECT_ROOT), "UniMER-1M.zip"),
+        os.path.join(str(PROJECT_ROOT), "data", "UniMER-1M.zip"),
+        "/tmp/UniMER-1M.zip",
+    ]:
+        if os.path.isfile(manual_path):
+            return manual_path
+
+    return None
+
+
+def _process_unimer_zip(zip_path, images_dir, idx_start, max_w, max_h):
+    """Process UniMER ZIP file. Returns (formulas_tags, next_idx)."""
+    print(f"  Processing ZIP: {zip_path}")
+    saved, skipped = 0, 0
+    idx = idx_start
+    formulas_tags = []
+
+    try:
+        zf = zipfile.ZipFile(zip_path, "r")
+        # Find the train.txt — might be at root level or inside UniMER-1M/
+        train_txt_name = None
+        for name in zf.namelist():
+            if name.endswith("train.txt"):
+                train_txt_name = name
+                break
+        if not train_txt_name:
+            print("  ERROR: train.txt not found inside ZIP")
+            return [], idx_start
+
+        # Detect the prefix (e.g., "UniMER-1M/" or "")
+        prefix = train_txt_name.replace("train.txt", "")
+        print(f"  ZIP prefix: '{prefix}'")
+
+        with zf.open(train_txt_name) as f:
+            formulas = [line.decode("utf-8").strip() for line in f.readlines()]
+        available = set(n for n in zf.namelist() if n.endswith(".png"))
+        print(f"  {len(formulas)} formulas, {len(available)} images")
+
+        for i, formula in enumerate(tqdm(formulas, desc="  UniMER")):
+            if not formula:
+                continue
+            img_name = f"{prefix}images/{i:07d}.png"
+            if img_name not in available:
+                skipped += 1
+                continue
+            try:
+                img_data = zf.read(img_name)
+                img = Image.open(io.BytesIO(img_data))
+                img.load()
+                if _save_pil_image(img, idx, images_dir, max_w, max_h):
+                    formulas_tags.append((formula, "printed"))
+                    idx += 1
+                    saved += 1
+                else:
+                    skipped += 1
+                del img_data, img
+            except Exception:
+                skipped += 1
+        zf.close()
+    except Exception as e:
+        print(f"  ZIP error: {e}")
+
+    print(f"  -> {saved} saved, {skipped} skipped")
+    return formulas_tags, idx
+
+
 def stream_unimer(images_dir, idx_start, cache_dir, max_w, max_h):
     """Stream UniMER: try ZIP first, then fallback to HuggingFace load_dataset."""
     print("[HF] Loading wanderkid/UniMER_Dataset...")
 
     # Try ZIP method first (faster, works on Python 3.14)
-    hf_cache = cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-    ds_dir = os.path.join(hf_cache, "datasets--wanderkid--UniMER_Dataset")
-
-    zip_path = None
-    if os.path.isdir(ds_dir):
-        for root, dirs, files in os.walk(os.path.join(ds_dir, "snapshots")):
-            for f in files:
-                if f == "UniMER-1M.zip":
-                    zip_path = os.path.realpath(os.path.join(root, f))
-                    break
+    zip_path = _find_unimer_zip(cache_dir)
 
     if zip_path and os.path.exists(zip_path):
-        print(f"  Found ZIP: {zip_path}")
-        saved, skipped = 0, 0
-        idx = idx_start
-        formulas_tags = []
+        return _process_unimer_zip(zip_path, images_dir, idx_start, max_w, max_h)
 
-        try:
-            zf = zipfile.ZipFile(zip_path, "r")
-            with zf.open("UniMER-1M/train.txt") as f:
-                formulas = [line.decode("utf-8").strip() for line in f.readlines()]
-            available = set(n for n in zf.namelist() if n.endswith(".png"))
-            print(f"  {len(formulas)} formulas, {len(available)} images")
+    # Fallback: download ZIP directly via huggingface_hub, then retry
+    print("  ZIP not found in cache, downloading via huggingface_hub...")
+    try:
+        from huggingface_hub import hf_hub_download
+        downloaded = hf_hub_download(
+            repo_id="wanderkid/UniMER_Dataset",
+            filename="UniMER-1M.zip",
+            repo_type="dataset",
+            cache_dir=cache_dir,
+        )
+        if downloaded and os.path.exists(downloaded):
+            print(f"  Downloaded to: {downloaded}")
+            zip_path = downloaded
+            # Re-run the ZIP processing
+            return _process_unimer_zip(zip_path, images_dir, idx_start, max_w, max_h)
+    except Exception as e:
+        print(f"  hf_hub_download failed: {e}")
 
-            for i, formula in enumerate(tqdm(formulas, desc="  UniMER")):
-                if not formula:
-                    continue
-                img_name = f"UniMER-1M/images/{i:07d}.png"
-                if img_name not in available:
-                    skipped += 1
-                    continue
-                try:
-                    img_data = zf.read(img_name)
-                    img = Image.open(io.BytesIO(img_data))
-                    img.load()
-                    if _save_pil_image(img, idx, images_dir, max_w, max_h):
-                        formulas_tags.append((formula, "printed"))
-                        idx += 1
-                        saved += 1
-                    else:
-                        skipped += 1
-                    del img_data, img
-                except Exception:
-                    skipped += 1
-            zf.close()
-        except Exception as e:
-            print(f"  ZIP error: {e}")
-
-        print(f"  -> {saved} saved, {skipped} skipped")
-        return formulas_tags, idx
-
-    # Fallback: download via HuggingFace load_dataset
-    print("  ZIP not found, downloading via HuggingFace...")
+    # Last resort: try load_dataset
+    print("  Trying load_dataset as last resort...")
     from datasets import load_dataset
     try:
         ds = load_dataset("wanderkid/UniMER_Dataset", "UniMER-1M", cache_dir=cache_dir)
