@@ -156,11 +156,17 @@ def train(args):
     if torch.cuda.is_available() and not args.get('no_cuda', False):
         gpu_memory_check(model, args)
 
+    # CUDA optimizations
+    if 'cuda' in str(device):
+        torch.backends.cudnn.benchmark = True
+        torch.cuda.empty_cache()
+
     # torch.compile for MPS/CUDA acceleration (PyTorch 2.0+)
     if hasattr(torch, 'compile') and device in ('mps', 'cuda'):
         try:
-            model = torch.compile(model)
-            print("Model compiled with torch.compile()")
+            compile_backend = 'inductor' if 'cuda' in str(device) else None
+            model = torch.compile(model, backend=compile_backend) if compile_backend else torch.compile(model)
+            print(f"Model compiled with torch.compile(backend={compile_backend})")
         except Exception as e:
             print(f"torch.compile not supported: {e}")
 
@@ -191,9 +197,9 @@ def train(args):
     if microbatch == -1:
         microbatch = args.batchsize
 
-    # Mixed precision (AMP)
+    # Mixed precision (AMP) — use bfloat16 on CUDA (more stable on Ampere+), float16 on MPS
     use_amp = args.get('use_amp', False)
-    amp_dtype = torch.float16
+    amp_dtype = torch.bfloat16 if 'cuda' in str(device) else torch.float16
     # Determine autocast device type
     if 'cuda' in str(device):
         autocast_device = 'cuda'
@@ -233,7 +239,7 @@ def train(args):
     try:
         for e in range(args.epoch, args.epochs):
             args.epoch = e
-            prefetch = PrefetchIterator(iter(dataloader), device, prefetch_size=3)
+            prefetch = PrefetchIterator(iter(dataloader), device, prefetch_size=5)
             dset = tqdm(prefetch, desc=f"Epoch {e+1}/{args.epochs}", total=len(dataloader))
             for i, (seq, im) in enumerate(dset):
                 if seq is not None and im is not None:

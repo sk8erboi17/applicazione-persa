@@ -42,22 +42,22 @@ pad_token: 0
 bos_token: 1
 eos_token: 2
 
-# Enhanced Training Configuration — Optimized for M4 48GB
+# Enhanced Training Configuration — Optimized for RTX 5090 32GB VRAM (CUDA)
 epochs: 15
-batchsize: 128
-micro_batchsize: 32
-testbatchsize: 32
-lr: 0.0005
+batchsize: 256
+micro_batchsize: 128
+testbatchsize: 128
+lr: 0.0007
 optimizer: AdamW
 betas:
 - 0.9
 - 0.999
 weight_decay: 0.01
 scheduler: CosineAnnealingWarmRestarts
-T_0: 3000
+T_0: 1500
 T_mult: 2
 eta_min: 0.000001
-warmup_steps: 1000
+warmup_steps: 500
 label_smoothing: 0.1
 use_amp: true
 gradient_clip: 1.0
