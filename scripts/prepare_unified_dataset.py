@@ -5,9 +5,10 @@ Memory-efficient: saves images to disk immediately, keeps only (formula, tag) in
 
 Datasets supported:
 - OleehyO/latex-formulas (cleaned_formulas): 552k samples [HuggingFace]
-- wanderkid/UniMER_Dataset: 1.06M samples [HuggingFace ZIP]
+- wanderkid/UniMER_Dataset: 1.06M samples [HuggingFace]
 - yuntian-deng/im2latex-100k: 68k processed samples [HuggingFace]
 - lukbl/LaTeX-OCR-dataset: 158k samples [HuggingFace]
+- deepcopy/MathWriting-human: 253k handwritten samples [HuggingFace]
 - hoang-quoc-trung/fusion-image-to-latex-datasets: 3.4M train [local CSV + images]
 - HME100K: ~99k handwritten samples [local zip]
 """
@@ -87,8 +88,10 @@ def stream_oleeh(images_dir, idx_start, cache_dir, max_w, max_h):
 
 
 def stream_unimer(images_dir, idx_start, cache_dir, max_w, max_h):
-    """Stream UniMER from ZIP: save images to disk."""
-    print("[LOCAL/ZIP] Loading wanderkid/UniMER_Dataset...")
+    """Stream UniMER: try ZIP first, then fallback to HuggingFace load_dataset."""
+    print("[HF] Loading wanderkid/UniMER_Dataset...")
+
+    # Try ZIP method first (faster, works on Python 3.14)
     hf_cache = cache_dir or os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     ds_dir = os.path.join(hf_cache, "datasets--wanderkid--UniMER_Dataset")
 
@@ -100,45 +103,80 @@ def stream_unimer(images_dir, idx_start, cache_dir, max_w, max_h):
                     zip_path = os.path.realpath(os.path.join(root, f))
                     break
 
-    if zip_path is None or not os.path.exists(zip_path):
-        print("  UniMER-1M.zip not found, skipping")
-        return [], idx_start
+    if zip_path and os.path.exists(zip_path):
+        print(f"  Found ZIP: {zip_path}")
+        saved, skipped = 0, 0
+        idx = idx_start
+        formulas_tags = []
 
-    print(f"  Found ZIP: {zip_path}")
+        try:
+            zf = zipfile.ZipFile(zip_path, "r")
+            with zf.open("UniMER-1M/train.txt") as f:
+                formulas = [line.decode("utf-8").strip() for line in f.readlines()]
+            available = set(n for n in zf.namelist() if n.endswith(".png"))
+            print(f"  {len(formulas)} formulas, {len(available)} images")
+
+            for i, formula in enumerate(tqdm(formulas, desc="  UniMER")):
+                if not formula:
+                    continue
+                img_name = f"UniMER-1M/images/{i:07d}.png"
+                if img_name not in available:
+                    skipped += 1
+                    continue
+                try:
+                    img_data = zf.read(img_name)
+                    img = Image.open(io.BytesIO(img_data))
+                    img.load()
+                    if _save_pil_image(img, idx, images_dir, max_w, max_h):
+                        formulas_tags.append((formula, "printed"))
+                        idx += 1
+                        saved += 1
+                    else:
+                        skipped += 1
+                    del img_data, img
+                except Exception:
+                    skipped += 1
+            zf.close()
+        except Exception as e:
+            print(f"  ZIP error: {e}")
+
+        print(f"  -> {saved} saved, {skipped} skipped")
+        return formulas_tags, idx
+
+    # Fallback: download via HuggingFace load_dataset
+    print("  ZIP not found, downloading via HuggingFace...")
+    from datasets import load_dataset
+    try:
+        ds = load_dataset("wanderkid/UniMER_Dataset", "UniMER-1M", cache_dir=cache_dir)
+    except Exception:
+        try:
+            ds = load_dataset("wanderkid/UniMER_Dataset", cache_dir=cache_dir)
+        except Exception as e:
+            print(f"  Failed to load UniMER via HF: {e}")
+            return [], idx_start
+
     saved, skipped = 0, 0
     idx = idx_start
     formulas_tags = []
 
-    try:
-        zf = zipfile.ZipFile(zip_path, "r")
-        with zf.open("UniMER-1M/train.txt") as f:
-            formulas = [line.decode("utf-8").strip() for line in f.readlines()]
-        available = set(n for n in zf.namelist() if n.endswith(".png"))
-        print(f"  {len(formulas)} formulas, {len(available)} images")
-
-        for i, formula in enumerate(tqdm(formulas, desc="  UniMER")):
-            if not formula:
-                continue
-            img_name = f"UniMER-1M/images/{i:07d}.png"
-            if img_name not in available:
-                skipped += 1
-                continue
+    for split in ds:
+        n = len(ds[split])
+        for i in tqdm(range(n), desc=f"  UniMER/{split}"):
             try:
-                img_data = zf.read(img_name)
-                img = Image.open(io.BytesIO(img_data))
-                img.load()
-                if _save_pil_image(img, idx, images_dir, max_w, max_h):
-                    formulas_tags.append((formula, "printed"))
-                    idx += 1
-                    saved += 1
+                item = ds[split][i]
+                img = item.get("image")
+                formula = item.get("latex", item.get("formula", item.get("text", "")))
+                if img is not None and formula and formula.strip():
+                    if _save_pil_image(img, idx, images_dir, max_w, max_h):
+                        formulas_tags.append((formula.strip(), "printed"))
+                        idx += 1
+                        saved += 1
+                    else:
+                        skipped += 1
                 else:
                     skipped += 1
-                del img_data, img  # Free memory immediately
             except Exception:
                 skipped += 1
-        zf.close()
-    except Exception as e:
-        print(f"  Error: {e}")
 
     print(f"  -> {saved} saved, {skipped} skipped")
     return formulas_tags, idx
@@ -302,6 +340,43 @@ def stream_hme100k(images_dir, idx_start, zip_path, extract_dir, max_w, max_h):
     return formulas_tags, idx
 
 
+def stream_mathwriting(images_dir, idx_start, cache_dir, max_w, max_h):
+    """Stream MathWriting-human dataset from HuggingFace (~253k handwritten)."""
+    from datasets import load_dataset
+    print("[HF] Loading deepcopy/MathWriting-human...")
+    try:
+        ds = load_dataset("deepcopy/MathWriting-human", cache_dir=cache_dir)
+    except Exception as e:
+        print(f"  Failed to load MathWriting: {e}")
+        return [], idx_start
+
+    saved, skipped = 0, 0
+    idx = idx_start
+    formulas_tags = []
+
+    for split in ds:
+        n = len(ds[split])
+        for i in tqdm(range(n), desc=f"  MathWriting/{split}"):
+            try:
+                item = ds[split][i]
+                img = item.get("image")
+                formula = item.get("latex", "")
+                if img is not None and formula and formula.strip():
+                    if _save_pil_image(img, idx, images_dir, max_w, max_h):
+                        formulas_tags.append((formula.strip(), "handwritten"))
+                        idx += 1
+                        saved += 1
+                    else:
+                        skipped += 1
+                else:
+                    skipped += 1
+            except Exception:
+                skipped += 1
+
+    print(f"  -> {saved} saved, {skipped} skipped")
+    return formulas_tags, idx
+
+
 # ──────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────
@@ -360,6 +435,11 @@ def main():
 
     if "hme100k" not in args.skip_datasets and args.hme100k_zip:
         ft, idx = stream_hme100k(staging_dir, idx, args.hme100k_zip, args.hme100k_extract, args.max_width, args.max_height)
+        all_formulas_tags.extend(ft)
+        del ft
+
+    if "mathwriting" not in args.skip_datasets:
+        ft, idx = stream_mathwriting(staging_dir, idx, args.cache_dir, args.max_width, args.max_height)
         all_formulas_tags.extend(ft)
         del ft
 
