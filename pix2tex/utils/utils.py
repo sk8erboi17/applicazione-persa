@@ -45,7 +45,7 @@ def seed_everything(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.deterministic = False  # Allow CUDA optimizations (faster, non-deterministic)
     torch.backends.cudnn.benchmark = True
 
 
@@ -79,7 +79,7 @@ def gpu_memory_check(model, args):
     try:
         batchsize = args.batchsize if args.get('micro_batchsize', -1) == -1 else args.micro_batchsize
         for _ in range(5):
-            im = torch.empty(batchsize, args.channels, args.max_height, args.min_height, device=args.device).float()
+            im = torch.empty(batchsize, args.channels, args.max_height, args.max_width, device=args.device).float()
             seq = torch.randint(0, args.num_tokens, (batchsize, args.max_seq_len), device=args.device).long()
             loss = model.data_parallel(im, device_ids=args.gpu_devices, tgt_seq=seq)
             loss.sum().backward()

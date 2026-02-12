@@ -51,9 +51,11 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
         if seq is None or im is None:
             continue
         #loss = decoder(tgt_seq, mask=tgt_mask, context=encoded)
-        dec = model.generate(im.to(device), temperature=args.get('temperature', .2))
+        dec = model.generate(im.to(device, non_blocking=True), temperature=args.get('temperature', .2))
         pred = detokenize(dec, dataset.tokenizer)
         truth = detokenize(seq['input_ids'], dataset.tokenizer)
+        if 'cuda' in str(device):
+            torch.cuda.synchronize()  # Ensure GPU ops complete before metrics
         bleus.append(metrics.bleu_score(pred, [alternatives(x) for x in truth]))
         for predi, truthi in zip(token2str(dec, dataset.tokenizer), token2str(seq['input_ids'], dataset.tokenizer)):
             ts = post_process(truthi)

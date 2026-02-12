@@ -159,6 +159,7 @@ def train(args):
     # CUDA optimizations
     if 'cuda' in str(device):
         torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')  # Enable TF32 on tensor cores (~20% speedup)
         torch.cuda.empty_cache()
 
     # torch.compile for MPS/CUDA acceleration (PyTorch 2.0+)
@@ -247,9 +248,9 @@ def train(args):
                     total_loss = 0
 
                     for j in range(0, len(im), microbatch):
-                        tgt_seq = seq['input_ids'][j:j+microbatch].to(device)
-                        tgt_mask = seq['attention_mask'][j:j+microbatch].bool().to(device)
-                        images = im[j:j+microbatch].to(device)
+                        tgt_seq = seq['input_ids'][j:j+microbatch].to(device, non_blocking=True)
+                        tgt_mask = seq['attention_mask'][j:j+microbatch].bool().to(device, non_blocking=True)
+                        images = im[j:j+microbatch].to(device, non_blocking=True)
 
                         if use_amp and autocast_device in ('cuda', 'mps'):
                             with torch.amp.autocast(device_type=autocast_device, dtype=amp_dtype):
@@ -303,6 +304,8 @@ def train(args):
                         num_batches=int(args.valbatches * max(1, e) / args.epochs),
                         name='val'
                     )
+                    if 'cuda' in str(device):
+                        torch.cuda.empty_cache()  # Free VRAM after validation
                     if bleu_score > max_bleu and token_accuracy > max_token_acc:
                         max_bleu, max_token_acc = bleu_score, token_accuracy
                         save_models(e, step=i)
