@@ -1,25 +1,25 @@
 # ════════════════════════════════════════════════════════════
-# LaTeX-OCR Medium Architecture Training Configuration
+# LaTeX-OCR Large Architecture Training Configuration
 # Unified dataset: ~1M samples (printed + handwritten)
-# Cross-platform: macOS (MPS) / Linux (CUDA) / CPU
-# Model: dim=384, depth=6+6, ~65M params
+# Optimized for RTX 5090 32GB VRAM (CUDA)
+# Model: dim=512, depth=8+8, ~120M params
 # ════════════════════════════════════════════════════════════
 
 # GPU / Device
 gpu_devices: null
 no_cuda: false
 
-# Model Architecture — Medium (384-dim, 6-depth)
+# Model Architecture — Large (512-dim, 8-depth)
 encoder_structure: hybrid
 backbone_layers:
 - 2
 - 3
 - 7
 channels: 1
-dim: 384
-encoder_depth: 6
+dim: 512
+encoder_depth: 8
 heads: 8
-num_layers: 6
+num_layers: 8
 num_tokens: 8000
 max_seq_len: 512
 patch_size: 16
@@ -45,8 +45,8 @@ eos_token: 2
 # Enhanced Training Configuration — Optimized for RTX 5090 32GB VRAM (CUDA)
 epochs: 15
 batchsize: 256
-micro_batchsize: 128
-testbatchsize: 128
+micro_batchsize: 64
+testbatchsize: 64
 lr: 0.0007
 optimizer: AdamW
 betas:
@@ -71,7 +71,7 @@ sample_weights: data/unified/sample_weights.json
 
 # Checkpointing
 model_path: checkpoints
-name: latex_ocr_medium
+name: latex_ocr_large
 load_chkpt: null
 save_freq: 2
 sample_freq: 2000
