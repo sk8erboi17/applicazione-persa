@@ -70,5 +70,6 @@ def get_encoder(args):
             dim=args.dim,
             depth=args.encoder_depth,
             heads=args.heads,
+            attn_flash=True,
         )
     )
