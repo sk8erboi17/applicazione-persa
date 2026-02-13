@@ -186,6 +186,17 @@ class Im2LatexDataset:
         self._get_size()
         iter(self)
 
+    def __getstate__(self):
+        """Exclude transform from pickle to avoid albumentations version conflicts."""
+        state = self.__dict__.copy()
+        state.pop('transform', None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore transform from current albumentations installation."""
+        self.__dict__.update(state)
+        self.transform = train_transform
+
     def save(self, filename):
         """save a pickled version of a dataset
 
