@@ -172,6 +172,7 @@ def train(args):
             print(f"torch.compile not supported: {e}")
 
     max_bleu, max_token_acc = 0, 0
+    best_score = 0
     out_path = os.path.join(args.model_path, args.name)
     os.makedirs(out_path, exist_ok=True)
 
@@ -301,12 +302,14 @@ def train(args):
                 if (i+1+len(dataloader)*e) % args.sample_freq == 0:
                     bleu_score, edit_distance, token_accuracy = evaluate(
                         model, valdataloader, args,
-                        num_batches=int(args.valbatches * max(1, e) / args.epochs),
+                        num_batches=args.valbatches,
                         name='val'
                     )
                     if 'cuda' in str(device):
                         torch.cuda.empty_cache()  # Free VRAM after validation
-                    if bleu_score > max_bleu and token_accuracy > max_token_acc:
+                    score = bleu_score + token_accuracy
+                    if score > best_score:
+                        best_score = score
                         max_bleu, max_token_acc = bleu_score, token_accuracy
                         save_models(e, step=i)
                         no_improvement_count = 0

@@ -42,7 +42,7 @@ bos_token: 1
 eos_token: 2
 
 # Enhanced Training Configuration — Optimized for M4 48GB
-epochs: 15
+epochs: 30
 batchsize: 128
 micro_batchsize: 64
 testbatchsize: 64
@@ -60,7 +60,7 @@ warmup_steps: 1000
 label_smoothing: 0.1
 use_amp: true
 gradient_clip: 1.0
-early_stopping_patience: 5
+early_stopping_patience: 15
 
 # Dataset paths (update after running prepare_unified_dataset.py)
 data: data/unified/train.pkl
