@@ -1,7 +1,24 @@
 import torch
 import torch.nn.functional as F
-from x_transformers.autoregressive_wrapper import AutoregressiveWrapper, top_k, top_p
+from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
 from x_transformers import TransformerWrapper, Decoder
+
+# x-transformers v2.x moved/renamed top_k and top_p
+try:
+    from x_transformers.autoregressive_wrapper import top_k, top_p
+except ImportError:
+    top_k = top_p = None
+
+
+def _top_k(logits, k=0.9):
+    """Top-k filtering compatible with both old and new x-transformers."""
+    if isinstance(k, float):
+        # Fraction of vocab — convert to int
+        num_tokens = logits.shape[-1]
+        k = max(int(k * num_tokens), 1)
+    indices_to_remove = logits < torch.topk(logits, k)[0][..., -1, None]
+    logits[indices_to_remove] = float('-inf')
+    return logits
 
 
 class CustomARWrapper(AutoregressiveWrapper):
@@ -9,7 +26,7 @@ class CustomARWrapper(AutoregressiveWrapper):
         super(CustomARWrapper, self).__init__(*args, **kwargs)
 
     @torch.no_grad()
-    def generate(self, start_tokens, seq_len=256, eos_token=None, temperature=1., filter_logits_fn=top_k, filter_thres=0.9, **kwargs):
+    def generate(self, start_tokens, seq_len=256, eos_token=None, temperature=1., filter_thres=0.9, **kwargs):
         device = start_tokens.device
         was_training = self.net.training
         num_dims = len(start_tokens.shape)
@@ -28,12 +45,10 @@ class CustomARWrapper(AutoregressiveWrapper):
         for _ in range(seq_len):
             x = out[:, -self.max_seq_len:]
             mask = mask[:, -self.max_seq_len:]
-            # print('arw:',out.shape)
             logits = self.net(x, mask=mask, **kwargs)[:, -1, :]
 
-            if filter_logits_fn in {top_k, top_p}:
-                filtered_logits = filter_logits_fn(logits, thres=filter_thres)
-                probs = F.softmax(filtered_logits / temperature, dim=-1)
+            filtered_logits = _top_k(logits.clone(), k=filter_thres)
+            probs = F.softmax(filtered_logits / temperature, dim=-1)
 
             sample = torch.multinomial(probs, 1)
 
