@@ -29,7 +29,6 @@ decoder_args:
   ff_glu: true
   rel_pos_bias: false
   use_scalenorm: false
-  attn_flash: true
 
 # Image dimensions
 max_width: 448
@@ -44,11 +43,11 @@ bos_token: 1
 eos_token: 2
 
 # Enhanced Training Configuration — Optimized for RTX 5090 32GB VRAM (CUDA)
-epochs: 15
+epochs: 30
 batchsize: 256
 micro_batchsize: 32
 testbatchsize: 32
-lr: 0.0007
+lr: 0.0005
 optimizer: AdamW
 betas:
 - 0.9
@@ -58,11 +57,11 @@ scheduler: CosineAnnealingWarmRestarts
 T_0: 1500
 T_mult: 2
 eta_min: 0.000001
-warmup_steps: 500
+warmup_steps: 1000
 label_smoothing: 0.1
 use_amp: true
 gradient_clip: 1.0
-early_stopping_patience: 5
+early_stopping_patience: 15
 
 # Dataset paths (update after running prepare_unified_dataset.py)
 data: data/unified/train.pkl
