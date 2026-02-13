@@ -193,12 +193,32 @@ def train(args):
     out_path = os.path.join(args.model_path, args.name)
     os.makedirs(out_path, exist_ok=True)
 
+    # Load model weights (supports both old format and new full checkpoint)
+    _resume_ckpt = None
     if args.load_chkpt is not None:
-        model.load_state_dict(torch.load(args.load_chkpt, map_location=device))
+        _resume_ckpt = torch.load(args.load_chkpt, map_location=device)
+        if isinstance(_resume_ckpt, dict) and 'model' in _resume_ckpt:
+            model.load_state_dict(_resume_ckpt['model'])
+            print(f"  Loaded model from {args.load_chkpt} (full checkpoint)")
+        else:
+            model.load_state_dict(_resume_ckpt)
+            _resume_ckpt = None  # Old format, nothing else to restore
+            print(f"  Loaded model from {args.load_chkpt} (weights only)")
 
     def save_models(e, step=0):
         ckpt_path = os.path.join(out_path, '%s_e%02d_step%02d.pth' % (args.name, e+1, step))
-        torch.save(model.state_dict(), ckpt_path)
+        checkpoint = {
+            'model': model.state_dict(),
+            'optimizer': opt.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'scaler': scaler.state_dict(),
+            'epoch': e,
+            'global_step': global_step,
+            'best_score': best_score,
+            'no_improvement_count': no_improvement_count,
+            'eval_count': eval_count,
+        }
+        torch.save(checkpoint, ckpt_path)
         yaml.dump(dict(args), open(os.path.join(out_path, 'config.yaml'), 'w+'))
         print(f"\n  Checkpoint saved: {ckpt_path}")
 
@@ -253,6 +273,20 @@ def train(args):
     loss_is_decreasing = False
 
     global_step = 0
+
+    # Restore full training state from checkpoint (if available)
+    if _resume_ckpt is not None and 'optimizer' in _resume_ckpt:
+        opt.load_state_dict(_resume_ckpt['optimizer'])
+        scheduler.load_state_dict(_resume_ckpt['scheduler'])
+        scaler.load_state_dict(_resume_ckpt['scaler'])
+        args.epoch = _resume_ckpt['epoch'] + 1
+        global_step = _resume_ckpt.get('global_step', 0)
+        best_score = _resume_ckpt.get('best_score', 0)
+        no_improvement_count = _resume_ckpt.get('no_improvement_count', 0)
+        eval_count = _resume_ckpt.get('eval_count', 0)
+        print(f"  Restored training state: epoch={args.epoch}, step={global_step}, "
+              f"best={best_score:.4f}, patience={no_improvement_count}/{early_stopping_patience}")
+        del _resume_ckpt  # Free memory
 
     # Print training config summary
     print("\n" + "=" * 50)
