@@ -45,7 +45,7 @@ eos_token: 2
 # Training — Optimized for RTX 5090 32GB VRAM
 epochs: 15
 batchsize: 256
-micro_batchsize: 128
+micro_batchsize: 64
 testbatchsize: 64
 lr: 0.0007
 optimizer: AdamW
