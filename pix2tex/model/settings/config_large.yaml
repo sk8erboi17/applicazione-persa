@@ -57,7 +57,7 @@ scheduler: OneCycleLR
 label_smoothing: 0.1
 use_amp: true
 gradient_clip: 1.0
-early_stopping_patience: 8
+early_stopping_patience: 15
 
 # Dataset paths
 data: data/unified/train.pkl
