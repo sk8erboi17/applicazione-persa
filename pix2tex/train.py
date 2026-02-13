@@ -244,6 +244,13 @@ def train(args):
     # Early stopping
     early_stopping_patience = args.get('early_stopping_patience', 0)
     no_improvement_count = 0
+    # Guards: warmup grace period + loss-trend veto
+    early_stopping_warmup_evals = args.get('early_stopping_warmup_evals', 0)
+    early_stopping_loss_patience = args.get('early_stopping_loss_patience', 0)
+    eval_count = 0
+    recent_losses = []
+    prev_window_avg_loss = None
+    loss_is_decreasing = False
 
     global_step = 0
 
@@ -259,7 +266,7 @@ def train(args):
     print(f"  Scheduler:    {scheduler_name}")
     print(f"  AMP:          {use_amp}")
     print(f"  Grad clip:    {gradient_clip}")
-    print(f"  Early stop:   {early_stopping_patience} evals")
+    print(f"  Early stop:   {early_stopping_patience} evals (warmup: {early_stopping_warmup_evals}, loss_patience: {early_stopping_loss_patience})")
     print(f"  Steps/epoch:  {steps_per_epoch}")
     if weights_data:
         print(f"  HW sampling:  target {weights_data.get('target_hw_ratio', 0.2):.0%}")
@@ -314,6 +321,10 @@ def train(args):
                     scheduler.step()
                     global_step += 1
 
+                    # Track loss for early stopping loss-trend veto
+                    if early_stopping_loss_patience > 0:
+                        recent_losses.append(total_loss)
+
                     # Logging
                     current_lr = opt.param_groups[0]['lr']
                     dset.set_description(
@@ -335,6 +346,16 @@ def train(args):
                     if 'cuda' in str(device):
                         torch.cuda.empty_cache()  # Free VRAM after validation
                     score = bleu_score + token_accuracy
+                    eval_count += 1
+
+                    # Compute loss trend for this eval window
+                    if early_stopping_loss_patience > 0 and len(recent_losses) > 0:
+                        curr_avg = sum(recent_losses) / len(recent_losses)
+                        if prev_window_avg_loss is not None:
+                            loss_is_decreasing = curr_avg < prev_window_avg_loss * 0.995
+                        prev_window_avg_loss = curr_avg
+                        recent_losses = []
+
                     if score > best_score:
                         best_score = score
                         max_bleu, max_token_acc = bleu_score, token_accuracy
@@ -342,11 +363,18 @@ def train(args):
                         no_improvement_count = 0
                         print(f"  >>> New best: BLEU={max_bleu:.4f}, ACC={max_token_acc:.4f}")
                     else:
-                        no_improvement_count += 1
+                        # Guard 1: warmup grace period
+                        if eval_count <= early_stopping_warmup_evals:
+                            print(f"  (warmup grace {eval_count}/{early_stopping_warmup_evals}, not counting)")
+                        # Guard 2: loss still decreasing → model is learning
+                        elif early_stopping_loss_patience > 0 and loss_is_decreasing:
+                            print(f"  (loss still decreasing: {prev_window_avg_loss:.4f}, not counting)")
+                        else:
+                            no_improvement_count += 1
 
                     # Early stopping
                     if early_stopping_patience > 0 and no_improvement_count >= early_stopping_patience:
-                        print(f"\nEarly stopping after {no_improvement_count} evaluations without improvement")
+                        print(f"\nEarly stopping after {no_improvement_count} evals without improvement (eval #{eval_count})")
                         save_models(e, step=i)
                         return
 
