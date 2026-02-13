@@ -72,7 +72,7 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
             dec = torch.nn.functional.pad(dec, (0, -shape_diff), "constant", args.pad_token)
         elif shape_diff > 0:
             tgt_seq = torch.nn.functional.pad(tgt_seq, (0, shape_diff), "constant", args.pad_token)
-        mask = torch.logical_or(tgt_seq != args.pad_token, dec != args.pad_token)
+        mask = tgt_seq != args.pad_token
         tok_acc = (dec == tgt_seq)[mask].float().mean().item()
         token_acc.append(tok_acc)
         pbar.set_description('BLEU: %.3f, ED: %.2e, ACC: %.3f' % (np.mean(bleus), np.mean(edit_dists), np.mean(token_acc)))

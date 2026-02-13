@@ -87,6 +87,13 @@ class CustomARWrapper(AutoregressiveWrapper):
 
         out = out[:, t:]
 
+        # Truncate sequences after first EOS token (replace trailing with pad)
+        if eos_token is not None:
+            for b in range(out.shape[0]):
+                eos_positions = (out[b] == eos_token).nonzero(as_tuple=True)[0]
+                if len(eos_positions) > 0:
+                    out[b, eos_positions[0]+1:] = self.pad_value
+
         if num_dims == 1:
             out = out.squeeze(0)
 
