@@ -46,8 +46,8 @@ eos_token: 2
 # Enhanced Training Configuration — Optimized for RTX 5090 32GB VRAM (CUDA)
 epochs: 15
 batchsize: 256
-micro_batchsize: 64
-testbatchsize: 64
+micro_batchsize: 32
+testbatchsize: 32
 lr: 0.0007
 optimizer: AdamW
 betas:
