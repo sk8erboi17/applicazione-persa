@@ -10,6 +10,7 @@ from os.path import join
 from collections import defaultdict
 import pickle
 import cv2
+from concurrent.futures import ThreadPoolExecutor
 from transformers import PreTrainedTokenizerFast
 from tqdm.auto import tqdm
 
@@ -33,6 +34,7 @@ class Im2LatexDataset:
     eos_token_id = 2
     transform = train_transform
     data = defaultdict(lambda: [])
+    sample_weights = None  # Per-sample weights for weighted sampling
 
     def __init__(self, equations=None, images=None, tokenizer=None, shuffle=True, batchsize=16, max_seq_len=1024,
                  max_dimensions=(1024, 512), min_dimensions=(32, 32), pad=False, keep_smaller_batches=False, test=False):
@@ -42,7 +44,7 @@ class Im2LatexDataset:
             equations (str, optional): Path to equations. Defaults to None.
             images (str, optional): Directory where images are saved. Defaults to None.
             tokenizer (str, optional): Path to saved tokenizer. Defaults to None.
-            shuffle (bool, opitonal): Defaults to True. 
+            shuffle (bool, opitonal): Defaults to True.
             batchsize (int, optional): Defaults to 16.
             max_seq_len (int, optional): Defaults to 1024.
             max_dimensions (tuple(int, int), optional): Maximal dimensions the model can handle
@@ -89,7 +91,26 @@ class Im2LatexDataset:
         self.pairs = []
         for k in self.data:
             info = np.array(self.data[k], dtype=object)
-            p = torch.randperm(len(info)) if self.shuffle else torch.arange(len(info))
+            if self.shuffle:
+                if self.sample_weights is not None:
+                    # Weighted sampling: oversample handwritten data
+                    # Extract global index from image filename (e.g. "0000042.png" -> 42)
+                    weights_for_group = []
+                    for eq, path in self.data[k]:
+                        try:
+                            idx = int(os.path.basename(path).split('.')[0])
+                            if idx < len(self.sample_weights):
+                                weights_for_group.append(self.sample_weights[idx])
+                            else:
+                                weights_for_group.append(1.0)
+                        except (ValueError, IndexError):
+                            weights_for_group.append(1.0)
+                    w = torch.tensor(weights_for_group, dtype=torch.float)
+                    p = torch.multinomial(w, len(info), replacement=True)
+                else:
+                    p = torch.randperm(len(info))
+            else:
+                p = torch.arange(len(info))
             for i in range(0, len(info), self.batchsize):
                 batch = info[p[i:i+self.batchsize]]
                 if len(batch.shape) == 1:
@@ -128,18 +149,28 @@ class Im2LatexDataset:
         # check if sequence length is too long
         if self.max_seq_len < tok['attention_mask'].shape[1]:
             return next(self)
-        images = []
-        for path in list(ims):
+
+        # Parallel image loading with ThreadPoolExecutor
+        transform = self.transform
+        is_test = self.test
+
+        def load_single(path):
             im = cv2.imread(path)
             if im is None:
-                print(path, 'not found!')
-                continue
+                return None
             im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-            if not self.test:
-                # sometimes convert to bitmask
+            if not is_test:
                 if np.random.random() < .04:
                     im[im != 255] = 0
-            images.append(self.transform(image=im)['image'][:1])
+            return transform(image=im)['image'][:1]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(load_single, list(ims)))
+
+        images = [img for img in results if img is not None]
+        if len(images) == 0:
+            return None, None
+
         try:
             images = torch.cat(images).float().unsqueeze(1)
         except RuntimeError:

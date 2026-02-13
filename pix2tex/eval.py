@@ -43,6 +43,11 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
     """
     assert len(dataset) > 0
     device = args.device
+    use_amp = args.get('use_amp', False)
+    autocast_device = 'cuda' if 'cuda' in str(device) else ('mps' if str(device) == 'mps' else 'cpu')
+    amp_dtype = torch.bfloat16 if 'cuda' in str(device) else torch.float16
+    eval_temp = args.get('eval_temperature', 0.0)
+
     log = {}
     bleus, edit_dists, token_acc = [], [], []
     bleu_score, edit_distance, token_accuracy = 0, 1, 0
@@ -50,12 +55,11 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
     for i, (seq, im) in pbar:
         if seq is None or im is None:
             continue
-        #loss = decoder(tgt_seq, mask=tgt_mask, context=encoded)
-        dec = model.generate(im.to(device, non_blocking=True), temperature=args.get('temperature', .2))
+        # Use AMP autocast for faster inference
+        with torch.amp.autocast(device_type=autocast_device, dtype=amp_dtype, enabled=use_amp):
+            dec = model.generate(im.to(device, non_blocking=True), temperature=eval_temp)
         pred = detokenize(dec, dataset.tokenizer)
         truth = detokenize(seq['input_ids'], dataset.tokenizer)
-        if 'cuda' in str(device):
-            torch.cuda.synchronize()  # Ensure GPU ops complete before metrics
         bleus.append(metrics.bleu_score(pred, [alternatives(x) for x in truth]))
         for predi, truthi in zip(token2str(dec, dataset.tokenizer), token2str(seq['input_ids'], dataset.tokenizer)):
             ts = post_process(truthi)

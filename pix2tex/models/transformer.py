@@ -22,8 +22,30 @@ def _top_k(logits, k=0.9):
 
 
 class CustomARWrapper(AutoregressiveWrapper):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, label_smoothing=0.0, **kwargs):
         super(CustomARWrapper, self).__init__(*args, **kwargs)
+        self.label_smoothing = label_smoothing
+
+    def forward(self, x, **kwargs):
+        """Forward pass with label smoothing support.
+
+        Overrides AutoregressiveWrapper.forward() to pass label_smoothing
+        to F.cross_entropy (the base class ignores the config value).
+        """
+        xi = x[:, :-1]
+        xo = x[:, 1:]
+        # Adjust mask to match shifted sequence length
+        mask = kwargs.get('mask', None)
+        if mask is not None and mask.shape[1] == x.shape[1]:
+            mask = mask[:, :-1]
+            kwargs['mask'] = mask
+        out = self.net(xi, **kwargs)
+        loss = F.cross_entropy(
+            out.transpose(1, 2), xo,
+            ignore_index=self.ignore_index,
+            label_smoothing=self.label_smoothing
+        )
+        return loss
 
     @torch.no_grad()
     def generate(self, start_tokens, seq_len=256, eos_token=None, temperature=1., filter_thres=0.9, **kwargs):
@@ -47,10 +69,15 @@ class CustomARWrapper(AutoregressiveWrapper):
             mask = mask[:, -self.max_seq_len:]
             logits = self.net(x, mask=mask, **kwargs)[:, -1, :]
 
-            filtered_logits = _top_k(logits.clone(), k=filter_thres)
-            probs = F.softmax(filtered_logits / temperature, dim=-1)
-
-            sample = torch.multinomial(probs, 1)
+            if temperature == 0:
+                # Greedy decoding: deterministic, best for eval
+                sample = logits.argmax(dim=-1, keepdim=True)
+            else:
+                # Stochastic sampling with top-k filtering
+                if filter_logits_fn in {top_k, top_p}:
+                    filtered_logits = filter_logits_fn(logits, thres=filter_thres)
+                    probs = F.softmax(filtered_logits / temperature, dim=-1)
+                sample = torch.multinomial(probs, 1)
 
             out = torch.cat((out, sample), dim=-1)
             mask = F.pad(mask, (0, 1), value=True)
@@ -78,4 +105,5 @@ def get_decoder(args):
                 heads=args.heads,
                 **args.decoder_args
             )),
-        pad_value=args.pad_token)
+        pad_value=args.pad_token,
+        label_smoothing=args.get('label_smoothing', 0.0))

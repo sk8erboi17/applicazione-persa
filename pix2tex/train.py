@@ -9,7 +9,6 @@ from threading import Thread
 from queue import Queue
 
 import torch
-from torch.utils.data import WeightedRandomSampler
 from munch import Munch
 from tqdm.auto import tqdm
 import wandb
@@ -29,12 +28,16 @@ class PrefetchIterator:
         self.queue = Queue(maxsize=prefetch_size)
         self.thread = None
         self._stop = False
+        self._use_pin_memory = 'cuda' in str(device)
 
     def _fill_queue(self):
         try:
             for seq, im in self.dataloader:
                 if self._stop:
                     break
+                # Pin memory for faster H2D transfer (safe in background thread)
+                if self._use_pin_memory and im is not None:
+                    im = im.pin_memory()
                 self.queue.put((seq, im))
             self.queue.put(None)  # Sentinel
         except Exception:
@@ -77,9 +80,20 @@ def create_optimizer(model, args):
     return get_optimizer(optimizer_name)(model.parameters(), lr, betas=betas)
 
 
-def create_scheduler(opt, args):
-    """Create learning rate scheduler with warmup support."""
+def create_scheduler(opt, args, steps_per_epoch=None):
+    """Create learning rate scheduler."""
     scheduler_name = args.get('scheduler', 'StepLR')
+
+    if scheduler_name == 'OneCycleLR':
+        total_steps = (steps_per_epoch or 8000) * args.epochs
+        return torch.optim.lr_scheduler.OneCycleLR(
+            opt, max_lr=args.lr,
+            total_steps=total_steps,
+            pct_start=0.05,            # 5% warmup
+            anneal_strategy='cos',
+            div_factor=25,             # initial_lr = max_lr / 25
+            final_div_factor=1000      # final_lr = initial_lr / 1000
+        )
 
     if scheduler_name == 'CosineAnnealingWarmRestarts':
         T_0 = args.get('T_0', 5000)
@@ -97,7 +111,7 @@ def create_scheduler(opt, args):
 
 
 class WarmupScheduler:
-    """Wraps a scheduler to add linear warmup."""
+    """Wraps a scheduler to add linear warmup. Not needed with OneCycleLR."""
 
     def __init__(self, optimizer, scheduler, warmup_steps, base_lr):
         self.optimizer = optimizer
@@ -151,6 +165,9 @@ def train(args):
 
     # Load weighted sampling config (for printed/handwritten balancing)
     weights_data = load_sample_weights(args.get('sample_weights', None))
+    if weights_data and 'weights' in weights_data:
+        dataloader.sample_weights = weights_data['weights']
+        print(f"  Weighted sampling enabled: {len(weights_data['weights'])} weights loaded")
 
     model = get_model(args)
     if torch.cuda.is_available() and not args.get('no_cuda', False):
@@ -185,15 +202,25 @@ def train(args):
         yaml.dump(dict(args), open(os.path.join(out_path, 'config.yaml'), 'w+'))
         print(f"\n  Checkpoint saved: {ckpt_path}")
 
+    # Compute steps per epoch for scheduler
+    iter(dataloader)  # Trigger __iter__ to compute size
+    steps_per_epoch = len(dataloader)
+    print(f"  Steps/epoch:  {steps_per_epoch}")
+
     # Enhanced optimizer and scheduler
     opt = create_optimizer(model, args)
-    base_scheduler = create_scheduler(opt, args)
+    scheduler_name = args.get('scheduler', 'StepLR')
 
-    warmup_steps = args.get('warmup_steps', 0)
-    if warmup_steps > 0:
-        scheduler = WarmupScheduler(opt, base_scheduler, warmup_steps, args.lr)
+    if scheduler_name == 'OneCycleLR':
+        # OneCycleLR has built-in warmup, no WarmupScheduler needed
+        scheduler = create_scheduler(opt, args, steps_per_epoch=steps_per_epoch)
     else:
-        scheduler = base_scheduler
+        base_scheduler = create_scheduler(opt, args)
+        warmup_steps = args.get('warmup_steps', 0)
+        if warmup_steps > 0:
+            scheduler = WarmupScheduler(opt, base_scheduler, warmup_steps, args.lr)
+        else:
+            scheduler = base_scheduler
 
     microbatch = args.get('micro_batchsize', -1)
     if microbatch == -1:
@@ -229,11 +256,11 @@ def train(args):
     print(f"  Batch size:   {args.batchsize} (micro: {microbatch})")
     print(f"  LR:           {args.lr}")
     print(f"  Optimizer:    {args.get('optimizer', 'Adam')}")
-    print(f"  Scheduler:    {args.get('scheduler', 'StepLR')}")
-    print(f"  Warmup:       {warmup_steps} steps")
+    print(f"  Scheduler:    {scheduler_name}")
     print(f"  AMP:          {use_amp}")
     print(f"  Grad clip:    {gradient_clip}")
     print(f"  Early stop:   {early_stopping_patience} evals")
+    print(f"  Steps/epoch:  {steps_per_epoch}")
     if weights_data:
         print(f"  HW sampling:  target {weights_data.get('target_hw_ratio', 0.2):.0%}")
     print("=" * 50 + "\n")

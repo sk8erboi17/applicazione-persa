@@ -1,14 +1,15 @@
 # ════════════════════════════════════════════════════════════
-# LaTeX-OCR Enhanced Training Configuration
-# Unified dataset: ~10M samples (printed + handwritten)
-# Cross-platform: macOS (MPS) / Linux (CUDA) / CPU
+# LaTeX-OCR dim=256 Training Configuration (v2)
+# Unified dataset: ~1M samples (printed + handwritten)
+# Optimized for RTX 5090 32GB VRAM (CUDA)
+# Model: dim=256, depth=4+4, ~14M params
 # ════════════════════════════════════════════════════════════
 
 # GPU / Device
 gpu_devices: null
 no_cuda: false
 
-# Model Architecture (same as original for compatibility)
+# Model Architecture — dim=256 (~14M params)
 encoder_structure: hybrid
 backbone_layers:
 - 2
@@ -41,28 +42,24 @@ pad_token: 0
 bos_token: 1
 eos_token: 2
 
-# Enhanced Training Configuration — Optimized for M4 48GB
-epochs: 30
-batchsize: 128
-micro_batchsize: 64
+# Training — Optimized for RTX 5090 32GB VRAM
+epochs: 15
+batchsize: 256
+micro_batchsize: 128
 testbatchsize: 64
-lr: 0.0005
+lr: 0.0007
 optimizer: AdamW
 betas:
 - 0.9
 - 0.999
 weight_decay: 0.01
-scheduler: CosineAnnealingWarmRestarts
-T_0: 3000
-T_mult: 2
-eta_min: 0.000001
-warmup_steps: 1000
+scheduler: OneCycleLR
 label_smoothing: 0.1
 use_amp: true
 gradient_clip: 1.0
-early_stopping_patience: 15
+early_stopping_patience: 8
 
-# Dataset paths (update after running prepare_unified_dataset.py)
+# Dataset paths
 data: data/unified/train.pkl
 valdata: data/unified/val.pkl
 tokenizer: data/unified/tokenizer.json
@@ -70,17 +67,19 @@ sample_weights: data/unified/sample_weights.json
 
 # Checkpointing
 model_path: checkpoints
-name: latex_ocr_large
+name: latex_ocr_v2
 load_chkpt: null
 save_freq: 2
-sample_freq: 2000
+sample_freq: 4000
 
 # Evaluation
+eval_temperature: 0.0
 temperature: 0.2
-valbatches: 100
+valbatches: 50
 test_samples: 5
 
 # Logging
+wandb: false
 debug: false
 id: null
 seed: 42
