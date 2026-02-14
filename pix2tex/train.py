@@ -102,7 +102,9 @@ def create_scheduler(opt, args, steps_per_epoch=None):
         return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=T_0, T_mult=T_mult, eta_min=eta_min)
 
     if scheduler_name == 'CosineAnnealingLR':
-        T_max = args.get('T_max', args.epochs * 1000)
+        total_steps = (steps_per_epoch or 8000) * args.epochs
+        warmup = args.get('warmup_steps', 0)
+        T_max = args.get('T_max', total_steps - warmup)
         eta_min = args.get('eta_min', 1e-6)
         return torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=T_max, eta_min=eta_min)
 
@@ -235,7 +237,7 @@ def train(args):
         # OneCycleLR has built-in warmup, no WarmupScheduler needed
         scheduler = create_scheduler(opt, args, steps_per_epoch=steps_per_epoch)
     else:
-        base_scheduler = create_scheduler(opt, args)
+        base_scheduler = create_scheduler(opt, args, steps_per_epoch=steps_per_epoch)
         warmup_steps = args.get('warmup_steps', 0)
         if warmup_steps > 0:
             scheduler = WarmupScheduler(opt, base_scheduler, warmup_steps, args.lr)
@@ -298,6 +300,14 @@ def train(args):
     print(f"  LR:           {args.lr}")
     print(f"  Optimizer:    {args.get('optimizer', 'Adam')}")
     print(f"  Scheduler:    {scheduler_name}")
+    warmup_steps_cfg = args.get('warmup_steps', 0)
+    if warmup_steps_cfg > 0:
+        print(f"  Warmup:       {warmup_steps_cfg} steps")
+    if scheduler_name == 'CosineAnnealingLR':
+        total_s = steps_per_epoch * args.epochs
+        t_max = args.get('T_max', total_s - warmup_steps_cfg)
+        print(f"  T_max:        {t_max} (total: {total_s})")
+        print(f"  eta_min:      {args.get('eta_min', 1e-6)}")
     print(f"  AMP:          {use_amp}")
     print(f"  Grad clip:    {gradient_clip}")
     print(f"  Early stop:   {early_stopping_patience} evals (warmup: {early_stopping_warmup_evals}, loss_patience: {early_stopping_loss_patience})")
