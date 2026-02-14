@@ -136,6 +136,20 @@ class WarmupScheduler:
             return [self.base_lr * self.current_step / self.warmup_steps]
         return self.scheduler.get_last_lr() if hasattr(self.scheduler, 'get_last_lr') else [self.base_lr]
 
+    def state_dict(self):
+        return {
+            'current_step': self.current_step,
+            'warmup_steps': self.warmup_steps,
+            'base_lr': self.base_lr,
+            'scheduler': self.scheduler.state_dict(),
+        }
+
+    def load_state_dict(self, state):
+        self.current_step = state['current_step']
+        self.warmup_steps = state['warmup_steps']
+        self.base_lr = state['base_lr']
+        self.scheduler.load_state_dict(state['scheduler'])
+
 
 def load_sample_weights(weights_path):
     """Load sample weights from JSON for weighted random sampling.
