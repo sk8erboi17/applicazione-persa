@@ -79,7 +79,8 @@ sample_freq: 2000
 # Evaluation
 eval_temperature: 0.0
 temperature: 0.2
-valbatches: 50
+valbatches: 200
+ema_alpha: 0.3
 test_samples: 5
 
 # Logging

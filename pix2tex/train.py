@@ -233,6 +233,8 @@ def train(args):
             'best_score': best_score,
             'no_improvement_count': no_improvement_count,
             'eval_count': eval_count,
+            'ema_score': ema_score,
+            'loss_patience_remaining': loss_patience_remaining,
         }
         torch.save(checkpoint, ckpt_path)
         yaml.dump(dict(args), open(os.path.join(out_path, 'config.yaml'), 'w+'))
@@ -283,10 +285,14 @@ def train(args):
     # Guards: warmup grace period + loss-trend veto
     early_stopping_warmup_evals = args.get('early_stopping_warmup_evals', 0)
     early_stopping_loss_patience = args.get('early_stopping_loss_patience', 0)
+    loss_patience_remaining = early_stopping_loss_patience
     eval_count = 0
     recent_losses = []
     prev_window_avg_loss = None
     loss_is_decreasing = False
+    # EMA smoothing for stable early stopping
+    ema_score = 0.0
+    ema_alpha = args.get('ema_alpha', 0.3)
 
     global_step = 0
 
@@ -300,8 +306,11 @@ def train(args):
         best_score = _resume_ckpt.get('best_score', 0)
         no_improvement_count = _resume_ckpt.get('no_improvement_count', 0)
         eval_count = _resume_ckpt.get('eval_count', 0)
+        ema_score = _resume_ckpt.get('ema_score', 0.0)
+        loss_patience_remaining = _resume_ckpt.get('loss_patience_remaining', early_stopping_loss_patience)
         print(f"  Restored training state: epoch={args.epoch}, step={global_step}, "
-              f"best={best_score:.4f}, patience={no_improvement_count}/{early_stopping_patience}")
+              f"best={best_score:.4f}, patience={no_improvement_count}/{early_stopping_patience}, "
+              f"ema={ema_score:.4f}")
         del _resume_ckpt  # Free memory
 
     # Print training config summary
@@ -406,29 +415,43 @@ def train(args):
                     score = bleu_score + token_accuracy
                     eval_count += 1
 
+                    # EMA smoothing for stable early stopping
+                    if eval_count == 1:
+                        ema_score = score
+                    else:
+                        ema_score = ema_alpha * score + (1 - ema_alpha) * ema_score
+
                     # Compute loss trend for this eval window
                     if early_stopping_loss_patience > 0 and len(recent_losses) > 0:
                         curr_avg = sum(recent_losses) / len(recent_losses)
                         if prev_window_avg_loss is not None:
-                            loss_is_decreasing = curr_avg < prev_window_avg_loss * 0.995
+                            loss_is_decreasing = curr_avg < prev_window_avg_loss * 0.999
                         prev_window_avg_loss = curr_avg
                         recent_losses = []
 
-                    if score > best_score:
-                        best_score = score
+                    print(f"  Score: {score:.4f} (EMA: {ema_score:.4f}, best: {best_score:.4f})")
+                    if ema_score > best_score:
+                        best_score = ema_score
                         max_bleu, max_token_acc = bleu_score, token_accuracy
                         save_models(e, step=i)
                         no_improvement_count = 0
-                        print(f"  >>> New best: BLEU={max_bleu:.4f}, ACC={max_token_acc:.4f}")
+                        loss_patience_remaining = early_stopping_loss_patience
+                        print(f"  >>> New best: BLEU={max_bleu:.4f}, ACC={max_token_acc:.4f} (EMA={ema_score:.4f})")
                     else:
                         # Guard 1: warmup grace period
                         if eval_count <= early_stopping_warmup_evals:
                             print(f"  (warmup grace {eval_count}/{early_stopping_warmup_evals}, not counting)")
-                        # Guard 2: loss still decreasing → model is learning
-                        elif early_stopping_loss_patience > 0 and loss_is_decreasing:
-                            print(f"  (loss still decreasing: {prev_window_avg_loss:.4f}, not counting)")
+                        # Guard 2: loss-trend veto with depletion counter
+                        elif loss_patience_remaining > 0:
+                            if loss_is_decreasing:
+                                loss_patience_remaining = early_stopping_loss_patience
+                                print(f"  (loss decreasing, loss_patience reset to {loss_patience_remaining})")
+                            else:
+                                loss_patience_remaining -= 1
+                                print(f"  (loss NOT decreasing, loss_patience: {loss_patience_remaining}/{early_stopping_loss_patience})")
                         else:
                             no_improvement_count += 1
+                            print(f"  (no improvement: {no_improvement_count}/{early_stopping_patience})")
 
                     # Early stopping
                     if early_stopping_patience > 0 and no_improvement_count >= early_stopping_patience:

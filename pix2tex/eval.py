@@ -49,7 +49,8 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
     eval_temp = args.get('eval_temperature', 0.0)
 
     log = {}
-    bleus, edit_dists, token_acc = [], [], []
+    all_preds, all_refs = [], []  # Accumulate for corpus-level BLEU
+    edit_dists, token_acc = [], []
     bleu_score, edit_distance, token_accuracy = 0, 1, 0
     pbar = tqdm(enumerate(iter(dataset)), total=len(dataset))
     for i, (seq, im) in pbar:
@@ -60,7 +61,9 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
             dec = model.generate(im.to(device, non_blocking=True), temperature=eval_temp)
         pred = detokenize(dec, dataset.tokenizer)
         truth = detokenize(seq['input_ids'], dataset.tokenizer)
-        bleus.append(metrics.bleu_score(pred, [alternatives(x) for x in truth]))
+        # Accumulate for single corpus-level BLEU at the end
+        all_preds.extend(pred)
+        all_refs.extend([alternatives(x) for x in truth])
         for predi, truthi in zip(token2str(dec, dataset.tokenizer), token2str(seq['input_ids'], dataset.tokenizer)):
             ts = post_process(truthi)
             if len(ts) > 0:
@@ -75,11 +78,11 @@ def evaluate(model: Model, dataset: Im2LatexDataset, args: Munch, num_batches: i
         mask = tgt_seq != args.pad_token
         tok_acc = (dec == tgt_seq)[mask].float().mean().item()
         token_acc.append(tok_acc)
-        pbar.set_description('BLEU: %.3f, ED: %.2e, ACC: %.3f' % (np.mean(bleus), np.mean(edit_dists), np.mean(token_acc)))
+        pbar.set_description('ED: %.2e, ACC: %.3f' % (np.mean(edit_dists), np.mean(token_acc)))
         if num_batches is not None and i >= num_batches:
             break
-    if len(bleus) > 0:
-        bleu_score = np.mean(bleus)
+    if len(all_preds) > 0:
+        bleu_score = metrics.bleu_score(all_preds, all_refs)
         log[name+'/bleu'] = bleu_score
     if len(edit_dists) > 0:
         edit_distance = np.mean(edit_dists)
